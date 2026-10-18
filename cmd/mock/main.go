@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dheerajsai15/LLM-Gateway/internal/openai"
@@ -17,27 +19,104 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	log.Printf("%+v", chatReq)
 
-	res := openai.Response{
+	if chatReq.Stream {
+		streamResponse(w, chatReq)
+	} else {
+		res := openai.Response{
+			ID:      "chatcmpl-mock-1",
+			Object:  "chat.completion",
+			Created: time.Now().Unix(),
+			Model:   chatReq.Model,
+			Choices: []openai.Choice{
+				{
+					Index: 0,
+					Message: openai.Message{
+						Role:    "assistant",
+						Content: "Hello from the mock",
+					},
+					FinishReason: "stop",
+				},
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(res); err != nil {
+			log.Println("encode error:", err)
+		}
+	}
+}
+
+func streamResponse(w http.ResponseWriter, chatReq openai.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	rc := http.NewResponseController(w)
+
+	chunk := openai.Chunk{
 		ID:      "chatcmpl-mock-1",
-		Object:  "chat.completion",
+		Object:  "chat.completion.chunk",
 		Created: time.Now().Unix(),
 		Model:   chatReq.Model,
-		Choices: []openai.Choice{
+		Choices: []openai.ChunkChoice{
 			{
 				Index: 0,
-				Message: openai.Message{
-					Role:    "assistant",
-					Content: "Hello from the mock",
-				},
-				FinishReason: "stop",
+				FinishReason: nil,
 			},
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(res); err != nil {
-		log.Println("encode error:", err)
+	chunk.Choices[0].Delta = openai.Delta{Role: "assistant"}
+	writeChunk(chunk, w, rc)
+
+	words := strings.Fields("Hello from the mock")
+
+	for i, word := range words {
+		if i != len(words)-1 {
+			word += " "
+		}
+
+		chunk.Choices[0].Delta = openai.Delta{Content: word}
+
+		writeChunk(chunk, w, rc)
+
+		time.Sleep(200 * time.Millisecond)
 	}
+
+	chunk.Choices[0].Delta = openai.Delta{}
+	stop := "stop"
+	chunk.Choices[0].FinishReason = &stop
+
+	writeChunk(chunk, w, rc)
+
+	if err := writeEvent(w, rc, []byte("[DONE]")); err != nil {
+		return
+	}
+}
+
+func writeChunk(chunk openai.Chunk, w http.ResponseWriter, rc *http.ResponseController){
+	data, err := json.Marshal(chunk)
+	if(err != nil){
+		log.Println(err)
+		return
+	}
+
+	if err := writeEvent(w, rc, data); err != nil {
+		return
+	}
+}
+
+func writeEvent(w http.ResponseWriter, rc *http.ResponseController, data []byte) error {
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		log.Println(err)
+		return err
+	}
+
+	if err := rc.Flush(); err != nil {
+		log.Println(err)
+		return err
+	}
+
+	return nil
 }
 
 func main() {
