@@ -59,14 +59,16 @@ func streamResponse(w http.ResponseWriter, chatReq openai.Request) {
 		Model:   chatReq.Model,
 		Choices: []openai.ChunkChoice{
 			{
-				Index: 0,
+				Index:        0,
 				FinishReason: nil,
 			},
 		},
 	}
 
 	chunk.Choices[0].Delta = openai.Delta{Role: "assistant"}
-	writeChunk(chunk, w, rc)
+	if err := writeChunk(w, rc, chunk); err != nil {
+		return
+	}
 
 	words := strings.Fields("Hello from the mock")
 
@@ -76,8 +78,9 @@ func streamResponse(w http.ResponseWriter, chatReq openai.Request) {
 		}
 
 		chunk.Choices[0].Delta = openai.Delta{Content: word}
-
-		writeChunk(chunk, w, rc)
+		if err := writeChunk(w, rc, chunk); err != nil {
+			return
+		}
 
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -85,24 +88,25 @@ func streamResponse(w http.ResponseWriter, chatReq openai.Request) {
 	chunk.Choices[0].Delta = openai.Delta{}
 	stop := "stop"
 	chunk.Choices[0].FinishReason = &stop
-
-	writeChunk(chunk, w, rc)
+	if err := writeChunk(w, rc, chunk); err != nil {
+		return
+	}
 
 	if err := writeEvent(w, rc, []byte("[DONE]")); err != nil {
 		return
 	}
 }
 
-func writeChunk(chunk openai.Chunk, w http.ResponseWriter, rc *http.ResponseController){
+// writeChunk sends one chunk as an SSE event. It returns the first error, so
+// the caller can stop the stream when the client disconnects.
+func writeChunk(w http.ResponseWriter, rc *http.ResponseController, chunk openai.Chunk) error {
 	data, err := json.Marshal(chunk)
-	if(err != nil){
+	if err != nil {
 		log.Println(err)
-		return
+		return err
 	}
 
-	if err := writeEvent(w, rc, data); err != nil {
-		return
-	}
+	return writeEvent(w, rc, data)
 }
 
 func writeEvent(w http.ResponseWriter, rc *http.ResponseController, data []byte) error {
