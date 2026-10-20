@@ -23,5 +23,14 @@ func Load(path string) (Config, error) {
 		err = fmt.Errorf("parse config %s: %w", path, err)
 		return cfg, err
 	}
+
+	if envAddr := os.Getenv("GATEWAY_LISTEN_ADDR"); envAddr != "" {
+		cfg.ListenAddr = envAddr
+	}
+
+	if envURL := os.Getenv("GATEWAY_UPSTREAM_URL"); envURL != "" {
+		cfg.UpstreamURL = envURL
+	}
+
 	return cfg, nil
 }
