@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -33,9 +34,8 @@ func Load(path string) (Config, error) {
 		cfg.UpstreamURL = envURL
 	}
 
-	verr := cfg.validate()
-	if verr != nil {
-		return cfg, fmt.Errorf("invalid config %s: %w", path, verr)
+	if err := cfg.validate(); err != nil {
+		return cfg, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return cfg, nil
 }
@@ -46,20 +46,20 @@ func (cfg *Config) validate() error {
 	}
 
 	if cfg.UpstreamURL == "" {
-		return fmt.Errorf("Upstream URL not set!")
+		return errors.New("upstream URL not set!")
 	}
 
 	u, err := url.Parse(cfg.UpstreamURL)
 	if err != nil {
-		return fmt.Errorf("URL parsing error: %w", err)
-	}
-
-	if u.Host == "" {
-		return fmt.Errorf("Host is empty! upstream_url: %v", cfg.UpstreamURL)
+		return fmt.Errorf("url parsing error: %w", err)
 	}
 
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("Schema is not http or https! upstream_url: %v", cfg.UpstreamURL)
+		return fmt.Errorf("scheme is not http or https! upstream_url: %q", cfg.UpstreamURL)
+	}
+
+	if u.Host == "" {
+		return fmt.Errorf("host is empty! upstream_url: %q", cfg.UpstreamURL)
 	}
 
 	return nil
