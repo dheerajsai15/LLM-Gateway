@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/dheerajsai15/LLM-Gateway/internal/config"
 	"github.com/dheerajsai15/LLM-Gateway/internal/openai"
 )
 
@@ -90,6 +91,12 @@ func copyHeader(dst, src http.Header) {
 }
 
 func main() {
+	cfg, err := config.Load("config.yaml")
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("%+v", cfg)
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
