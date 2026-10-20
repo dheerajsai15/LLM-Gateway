@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,7 +21,7 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 	log.Printf("%+v", chatReq)
 
 	if chatReq.Stream {
-		streamResponse(w, chatReq)
+		streamResponse(req.Context(), w, chatReq)
 	} else {
 		res := openai.Response{
 			ID:      "chatcmpl-mock-1",
@@ -46,7 +47,7 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func streamResponse(w http.ResponseWriter, chatReq openai.Request) {
+func streamResponse(ctx context.Context, w http.ResponseWriter, chatReq openai.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 
@@ -82,7 +83,12 @@ func streamResponse(w http.ResponseWriter, chatReq openai.Request) {
 			return
 		}
 
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			log.Println("stream stopped:", ctx.Err())
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 
 	chunk.Choices[0].Delta = openai.Delta{}
