@@ -12,6 +12,11 @@ import (
 	"github.com/dheerajsai15/LLM-Gateway/internal/openai"
 )
 
+const (
+	stallModel = "mock-stall"
+	stallTime  = 10 * time.Second
+)
+
 func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 	chatReq := openai.Request{}
 	if err := json.NewDecoder(req.Body).Decode(&chatReq); err != nil {
@@ -74,6 +79,7 @@ func streamResponse(ctx context.Context, w http.ResponseWriter, chatReq openai.R
 	words := strings.Fields("Hello from the mock")
 
 	for i, word := range words {
+		delay := 200 * time.Millisecond
 		if i != len(words)-1 {
 			word += " "
 		}
@@ -83,11 +89,15 @@ func streamResponse(ctx context.Context, w http.ResponseWriter, chatReq openai.R
 			return
 		}
 
+		if chatReq.Model == stallModel && i == 0 {
+			delay = stallTime
+		}
+
 		select {
 		case <-ctx.Done():
 			log.Println("stream stopped:", ctx.Err())
 			return
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(delay):
 		}
 	}
 

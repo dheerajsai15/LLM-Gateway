@@ -10,14 +10,18 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/dheerajsai15/LLM-Gateway/internal/config"
 	"github.com/dheerajsai15/LLM-Gateway/internal/openai"
 )
 
+var errIdleTimeout = errors.New("upstream idle timeout")
+
 type gateway struct {
 	upstreamURL string
 	apiKey      string
+	idleTimeout time.Duration
 }
 
 func healthHandler(w http.ResponseWriter, req *http.Request) {
@@ -26,6 +30,9 @@ func healthHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
+	ctx, cancel := context.WithCancelCause(req.Context())
+	defer cancel(nil)
+
 	reqBody, err := io.ReadAll(req.Body)
 	if err != nil {
 		http.Error(w, "cannot read request body", http.StatusBadRequest)
@@ -39,7 +46,7 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 	}
 
 	upstreamPath := g.upstreamURL + req.RequestURI
-	upStreamReq, err := http.NewRequestWithContext(req.Context(), req.Method, upstreamPath, bytes.NewReader(reqBody))
+	upStreamReq, err := http.NewRequestWithContext(ctx, req.Method, upstreamPath, bytes.NewReader(reqBody))
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
 		log.Println("error during request creation", err)
@@ -49,12 +56,20 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 	copyHeader(upStreamReq.Header, req.Header)
 	upStreamReq.Header.Set("Authorization", "Bearer "+g.apiKey)
 
+	idle := time.AfterFunc(g.idleTimeout, func() { cancel(errIdleTimeout) })
+	defer idle.Stop()
+
 	res, err := http.DefaultClient.Do(upStreamReq)
-	if errors.Is(err, context.Canceled) {
-		log.Println("client disconnected before upstream response")
-		return
-	}
 	if err != nil {
+		if errors.Is(context.Cause(ctx), errIdleTimeout) {
+			log.Println("upstream idle timeout before response")
+			http.Error(w, "upstream idle timeout before response", http.StatusGatewayTimeout)
+			return
+		}
+		if errors.Is(err, context.Canceled) {
+			log.Println("client disconnected before upstream response")
+			return
+		}
 		http.Error(w, "upstream service unavailable", http.StatusBadGateway)
 		log.Println("upstream service unavailable", err)
 		return
@@ -71,6 +86,7 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 		n, err := res.Body.Read(buf)
 
 		if n > 0 {
+			idle.Reset(g.idleTimeout)
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				if req.Context().Err() != nil {
 					log.Println("client disconnected during stream")
@@ -95,6 +111,10 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 		}
 
 		if err != nil {
+			if errors.Is(context.Cause(ctx), errIdleTimeout) {
+				log.Println("upstream idle timeout during stream")
+				return
+			}
 			if errors.Is(err, context.Canceled) {
 				log.Println("client disconnected during stream")
 				return
@@ -122,7 +142,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	gw := &gateway{upstreamURL: cfg.UpstreamURL, apiKey: cfg.APIKey}
+	gw := &gateway{upstreamURL: cfg.UpstreamURL, apiKey: cfg.APIKey, idleTimeout: cfg.IdleTimeout}
 
 	mux := http.NewServeMux()
 
@@ -130,7 +150,7 @@ func main() {
 
 	mux.HandleFunc("POST /v1/chat/completions", gw.chatCompletionHandler)
 
-	log.Printf("listening on %s, upstream %s", cfg.ListenAddr, cfg.UpstreamURL)
+	log.Printf("listening on %s, upstream %s, idle timeout %s", cfg.ListenAddr, cfg.UpstreamURL, cfg.IdleTimeout)
 	if err := http.ListenAndServe(cfg.ListenAddr, mux); err != nil {
 		log.Fatal(err)
 	}
