@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -48,6 +50,10 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 	upStreamReq.Header.Set("Authorization", "Bearer "+g.apiKey)
 
 	res, err := http.DefaultClient.Do(upStreamReq)
+	if errors.Is(err, context.Canceled) {
+		log.Println("client disconnected before upstream response")
+		return
+	}
 	if err != nil {
 		http.Error(w, "upstream service unavailable", http.StatusBadGateway)
 		log.Println("upstream service unavailable", err)
@@ -66,11 +72,19 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
+				if req.Context().Err() != nil {
+					log.Println("client disconnected during stream")
+					return
+				}
 				log.Println("error while writing response", werr)
 				return
 			}
 
 			if ferr := rc.Flush(); ferr != nil {
+				if req.Context().Err() != nil {
+					log.Println("client disconnected during stream")
+					return
+				}
 				log.Println("error while flushing response", ferr)
 				return
 			}
@@ -81,6 +95,10 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 		}
 
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				log.Println("client disconnected during stream")
+				return
+			}
 			log.Println("error", err)
 			return
 		}
