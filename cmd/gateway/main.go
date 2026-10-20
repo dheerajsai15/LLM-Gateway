@@ -15,6 +15,7 @@ import (
 
 type gateway struct {
 	upstreamURL string
+	apiKey      string
 }
 
 func healthHandler(w http.ResponseWriter, req *http.Request) {
@@ -44,6 +45,7 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 	}
 
 	copyHeader(upStreamReq.Header, req.Header)
+	upStreamReq.Header.Set("Authorization", "Bearer "+g.apiKey)
 
 	res, err := http.DefaultClient.Do(upStreamReq)
 	if err != nil {
@@ -102,7 +104,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	gw := &gateway{upstreamURL: cfg.UpstreamURL}
+	gw := &gateway{upstreamURL: cfg.UpstreamURL, apiKey: cfg.APIKey}
 
 	mux := http.NewServeMux()
 
