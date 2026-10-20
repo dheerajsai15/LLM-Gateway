@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -91,7 +92,10 @@ func copyHeader(dst, src http.Header) {
 }
 
 func main() {
-	cfg, err := config.Load("config.yaml")
+	configFlag := flag.String("config", "config.yaml", "path to config file")
+	flag.Parse()
+
+	cfg, err := config.Load(*configFlag)
 	if err != nil {
 		log.Fatal(err)
 	}
