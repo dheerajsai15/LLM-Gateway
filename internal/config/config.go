@@ -12,6 +12,7 @@ import (
 type Config struct {
 	ListenAddr  string `yaml:"listen_addr"`
 	UpstreamURL string `yaml:"upstream_url"`
+	APIKey      string `yaml:"-"`
 }
 
 func Load(path string) (Config, error) {
@@ -34,6 +35,8 @@ func Load(path string) (Config, error) {
 		cfg.UpstreamURL = envURL
 	}
 
+	cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+
 	if err := cfg.validate(); err != nil {
 		return cfg, fmt.Errorf("invalid config %s: %w", path, err)
 	}
@@ -43,6 +46,10 @@ func Load(path string) (Config, error) {
 func (cfg *Config) validate() error {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":8080"
+	}
+
+	if cfg.APIKey == "" {
+		return errors.New("OPENAI_API_KEY is not set")
 	}
 
 	if cfg.UpstreamURL == "" {
