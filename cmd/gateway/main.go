@@ -13,12 +13,16 @@ import (
 	"github.com/dheerajsai15/LLM-Gateway/internal/openai"
 )
 
+type gateway struct {
+	upstreamURL string
+}
+
 func healthHandler(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "ok")
 }
 
-func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
+func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 	reqBody, err := io.ReadAll(req.Body)
 	if err != nil {
 		http.Error(w, "cannot read request body", http.StatusBadRequest)
@@ -27,16 +31,15 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 
 	reqObj := openai.Request{}
 	if err := json.Unmarshal(reqBody, &reqObj); err != nil {
-		http.Error(w, "Bad JSON", http.StatusBadRequest)
+		http.Error(w, "bad JSON", http.StatusBadRequest)
 		return
 	}
 
-	const upstreamURL = "http://localhost:9090"
-	upstreamPath := upstreamURL + req.RequestURI
+	upstreamPath := g.upstreamURL + req.RequestURI
 	upStreamReq, err := http.NewRequestWithContext(req.Context(), req.Method, upstreamPath, bytes.NewReader(reqBody))
 	if err != nil {
-		http.Error(w, "Server error", http.StatusInternalServerError)
-		log.Println("Error during request creation", err)
+		http.Error(w, "server error", http.StatusInternalServerError)
+		log.Println("error during request creation", err)
 		return
 	}
 
@@ -44,8 +47,8 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 
 	res, err := http.DefaultClient.Do(upStreamReq)
 	if err != nil {
-		http.Error(w, "Upstream service unavailable", http.StatusBadGateway)
-		log.Println("Upstream service unavailable", err)
+		http.Error(w, "upstream service unavailable", http.StatusBadGateway)
+		log.Println("upstream service unavailable", err)
 		return
 	}
 	defer res.Body.Close()
@@ -61,12 +64,12 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				log.Println("Error while writing response", werr)
+				log.Println("error while writing response", werr)
 				return
 			}
 
 			if ferr := rc.Flush(); ferr != nil {
-				log.Println("Error while flushing response", ferr)
+				log.Println("error while flushing response", ferr)
 				return
 			}
 		}
@@ -76,7 +79,7 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 		}
 
 		if err != nil {
-			log.Println("Error", err)
+			log.Println("error", err)
 			return
 		}
 	}
@@ -99,15 +102,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("%+v", cfg)
+	gw := &gateway{upstreamURL: cfg.UpstreamURL}
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
 
-	mux.HandleFunc("POST /v1/chat/completions", chatCompletionHandler)
+	mux.HandleFunc("POST /v1/chat/completions", gw.chatCompletionHandler)
 
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	log.Printf("listening on %s, upstream %s", cfg.ListenAddr, cfg.UpstreamURL)
+	if err := http.ListenAndServe(cfg.ListenAddr, mux); err != nil {
 		log.Fatal(err)
 	}
 }
