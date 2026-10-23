@@ -8,8 +8,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/dheerajsai15/LLM-Gateway/internal/config"
@@ -23,6 +26,13 @@ type gateway struct {
 	apiKey      string
 	idleTimeout time.Duration
 }
+
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 30 * time.Second
+	serverIdleTimeout = 120 * time.Second
+	shutdownTimeout   = 25 * time.Second
+)
 
 func healthHandler(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -49,7 +59,7 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 	upStreamReq, err := http.NewRequestWithContext(ctx, req.Method, upstreamPath, bytes.NewReader(reqBody))
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
-		log.Println("error during request creation", err)
+		slog.Error("request creation failed", "err", err)
 		return
 	}
 
@@ -62,16 +72,16 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 	res, err := http.DefaultClient.Do(upStreamReq)
 	if err != nil {
 		if errors.Is(context.Cause(ctx), errIdleTimeout) {
-			log.Println("upstream idle timeout before response")
+			slog.Warn("upstream idle timeout", "stage", "before_upstream_response")
 			http.Error(w, "upstream idle timeout before response", http.StatusGatewayTimeout)
 			return
 		}
 		if errors.Is(err, context.Canceled) {
-			log.Println("client disconnected before upstream response")
+			slog.Info("client disconnected", "stage", "before_upstream_response")
 			return
 		}
 		http.Error(w, "upstream service unavailable", http.StatusBadGateway)
-		log.Println("upstream service unavailable", err)
+		slog.Error("upstream service unavailable", "err", err)
 		return
 	}
 	defer res.Body.Close()
@@ -89,19 +99,19 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 			idle.Reset(g.idleTimeout)
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				if req.Context().Err() != nil {
-					log.Println("client disconnected during stream")
+					slog.Info("client disconnected", "stage", "during_stream", "err", werr)
 					return
 				}
-				log.Println("error while writing response", werr)
+				slog.Error("writing response failed", "err", werr)
 				return
 			}
 
 			if ferr := rc.Flush(); ferr != nil {
 				if req.Context().Err() != nil {
-					log.Println("client disconnected during stream")
+					slog.Info("client disconnected", "stage", "during_stream", "err", ferr)
 					return
 				}
-				log.Println("error while flushing response", ferr)
+				slog.Error("flushing response failed", "err", ferr)
 				return
 			}
 		}
@@ -112,14 +122,14 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 
 		if err != nil {
 			if errors.Is(context.Cause(ctx), errIdleTimeout) {
-				log.Println("upstream idle timeout during stream")
+				slog.Warn("upstream idle timeout", "stage", "during_stream")
 				return
 			}
 			if errors.Is(err, context.Canceled) {
-				log.Println("client disconnected during stream")
+				slog.Info("client disconnected", "stage", "during_stream")
 				return
 			}
-			log.Println("error", err)
+			slog.Error("reading upstream response failed", "err", err, "stage", "during_stream")
 			return
 		}
 	}
@@ -135,12 +145,15 @@ func copyHeader(dst, src http.Header) {
 }
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	slog.SetDefault(logger)
 	configFlag := flag.String("config", "config.yaml", "path to config file")
 	flag.Parse()
 
 	cfg, err := config.Load(*configFlag)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("load config failed", "err", err)
+		os.Exit(1)
 	}
 	gw := &gateway{upstreamURL: cfg.UpstreamURL, apiKey: cfg.APIKey, idleTimeout: cfg.IdleTimeout}
 
@@ -150,8 +163,40 @@ func main() {
 
 	mux.HandleFunc("POST /v1/chat/completions", gw.chatCompletionHandler)
 
-	log.Printf("listening on %s, upstream %s, idle timeout %s", cfg.ListenAddr, cfg.UpstreamURL, cfg.IdleTimeout)
-	if err := http.ListenAndServe(cfg.ListenAddr, mux); err != nil {
-		log.Fatal(err)
+	srv := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           logRequests(mux),
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		ReadTimeout:       readTimeout,
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errCh := make(chan error, 1)
+
+	slog.Info("gateway started", "listen_addr", cfg.ListenAddr, "upstream", cfg.UpstreamURL, "idle_timeout", cfg.IdleTimeout)
+	go func() {
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		slog.Error("server failed", "err", err)
+		os.Exit(1)
+	case <-ctx.Done():
+	}
+
+	stop()
+	slog.Info("shutting down", "cause", context.Cause(ctx))
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("shutdown failed", "err", err)
+	}
+
+	slog.Info("server stopped")
 }
