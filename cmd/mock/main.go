@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,7 +18,42 @@ const (
 	stallTime  = 10 * time.Second
 )
 
-func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
+var mockWords = strings.Fields("Hello from the mock")
+
+type mockConfig struct {
+	tokens     int
+	tokenDelay time.Duration
+	latency    time.Duration
+}
+
+func (cfg *mockConfig) validate() error {
+	if cfg.tokens < 1 {
+		return fmt.Errorf("tokens must be 1 or more, given: %d", cfg.tokens)
+	}
+	if cfg.tokenDelay < 0 {
+		return fmt.Errorf("token-delay must be 0 or more, given: %v", cfg.tokenDelay)
+	}
+	if cfg.latency < 0 {
+		return fmt.Errorf("latency must be 0 or more, given: %v", cfg.latency)
+	}
+
+	return nil
+}
+
+// responseTokens returns the content chunks of a response. It uses the mock
+// words in a loop, and each chunk except the last ends with a space.
+func (cfg *mockConfig) responseTokens() []string {
+	tokens := make([]string, cfg.tokens)
+	for i := range tokens {
+		tokens[i] = mockWords[i%len(mockWords)]
+		if i != len(tokens)-1 {
+			tokens[i] += " "
+		}
+	}
+	return tokens
+}
+
+func (cfg *mockConfig) chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 	chatReq := openai.Request{}
 	if err := json.NewDecoder(req.Body).Decode(&chatReq); err != nil {
 		http.Error(w, "JSON supplied is not correct format!", http.StatusBadRequest)
@@ -25,8 +61,13 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	log.Printf("%+v", chatReq)
 
+	if err := sleepCtx(req.Context(), cfg.latency); err != nil {
+		log.Println("latency wait stopped:", err)
+		return
+	}
+
 	if chatReq.Stream {
-		streamResponse(req.Context(), w, chatReq)
+		cfg.streamResponse(req.Context(), w, chatReq)
 	} else {
 		res := openai.Response{
 			ID:      "chatcmpl-mock-1",
@@ -38,7 +79,7 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 					Index: 0,
 					Message: openai.Message{
 						Role:    "assistant",
-						Content: "Hello from the mock",
+						Content: strings.Join(cfg.responseTokens(), ""),
 					},
 					FinishReason: "stop",
 				},
@@ -52,7 +93,7 @@ func chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func streamResponse(ctx context.Context, w http.ResponseWriter, chatReq openai.Request) {
+func (cfg *mockConfig) streamResponse(ctx context.Context, w http.ResponseWriter, chatReq openai.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 
@@ -72,19 +113,15 @@ func streamResponse(ctx context.Context, w http.ResponseWriter, chatReq openai.R
 	}
 
 	chunk.Choices[0].Delta = openai.Delta{Role: "assistant"}
+
 	if err := writeChunk(w, rc, chunk); err != nil {
 		return
 	}
 
-	words := strings.Fields("Hello from the mock")
+	for i, token := range cfg.responseTokens() {
+		delay := cfg.tokenDelay
 
-	for i, word := range words {
-		delay := 200 * time.Millisecond
-		if i != len(words)-1 {
-			word += " "
-		}
-
-		chunk.Choices[0].Delta = openai.Delta{Content: word}
+		chunk.Choices[0].Delta = openai.Delta{Content: token}
 		if err := writeChunk(w, rc, chunk); err != nil {
 			return
 		}
@@ -93,11 +130,9 @@ func streamResponse(ctx context.Context, w http.ResponseWriter, chatReq openai.R
 			delay = stallTime
 		}
 
-		select {
-		case <-ctx.Done():
-			log.Println("stream stopped:", ctx.Err())
+		if err := sleepCtx(ctx, delay); err != nil {
+			log.Println("stream wait stopped:", err)
 			return
-		case <-time.After(delay):
 		}
 	}
 
@@ -111,6 +146,16 @@ func streamResponse(ctx context.Context, w http.ResponseWriter, chatReq openai.R
 	if err := writeEvent(w, rc, []byte("[DONE]")); err != nil {
 		return
 	}
+}
+
+func sleepCtx(ctx context.Context, delay time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(delay):
+	}
+
+	return nil
 }
 
 // writeChunk sends one chunk as an SSE event. It returns the first error, so
@@ -140,11 +185,27 @@ func writeEvent(w http.ResponseWriter, rc *http.ResponseController, data []byte)
 }
 
 func main() {
+	addr := flag.String("addr", ":9090", "address to listen on")
+	tokens := flag.Int("tokens", 4, "number of content chunks in a response")
+	tokenDelay := flag.Duration("token-delay", 200*time.Millisecond, "delay after each content chunk in a stream")
+	latency := flag.Duration("latency", 0, "delay before the first byte of a response")
+	flag.Parse()
+
+	cfg := &mockConfig{
+		tokens:     *tokens,
+		tokenDelay: *tokenDelay,
+		latency:    *latency,
+	}
+	if err := cfg.validate(); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("mock started: addr=%s tokens=%d token-delay=%v latency=%v", *addr, cfg.tokens, cfg.tokenDelay, cfg.latency)
+
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("POST /v1/chat/completions", chatCompletionHandler)
+	mux.HandleFunc("POST /v1/chat/completions", cfg.chatCompletionHandler)
 
-	if err := http.ListenAndServe(":9090", mux); err != nil {
+	if err := http.ListenAndServe(*addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }
