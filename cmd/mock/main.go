@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -21,9 +22,11 @@ const (
 var mockWords = strings.Fields("Hello from the mock")
 
 type mockConfig struct {
-	tokens     int
-	tokenDelay time.Duration
-	latency    time.Duration
+	tokens      int
+	tokenDelay  time.Duration
+	latency     time.Duration
+	errorRate   float64
+	errorStatus int
 }
 
 func (cfg *mockConfig) validate() error {
@@ -35,6 +38,12 @@ func (cfg *mockConfig) validate() error {
 	}
 	if cfg.latency < 0 {
 		return fmt.Errorf("latency must be 0 or more, given: %v", cfg.latency)
+	}
+	if cfg.errorRate < 0 || cfg.errorRate > 1 {
+		return fmt.Errorf("error-rate must be from 0 to 1, given: %v", cfg.errorRate)
+	}
+	if cfg.errorStatus < 400 || cfg.errorStatus > 599 {
+		return fmt.Errorf("error-status must be from 400 to 599, given: %d", cfg.errorStatus)
 	}
 
 	return nil
@@ -63,6 +72,12 @@ func (cfg *mockConfig) chatCompletionHandler(w http.ResponseWriter, req *http.Re
 
 	if err := sleepCtx(req.Context(), cfg.latency); err != nil {
 		log.Println("latency wait stopped:", err)
+		return
+	}
+
+	if rand.Float64() < cfg.errorRate {
+		log.Println("injected error:", cfg.errorStatus)
+		writeError(w, cfg.errorStatus)
 		return
 	}
 
@@ -158,6 +173,27 @@ func sleepCtx(ctx context.Context, delay time.Duration) error {
 	return nil
 }
 
+// writeError sends an error in the OpenAI format. 4xx errors have the type
+// "invalid_request_error" and 5xx errors have the type "server_error".
+func writeError(w http.ResponseWriter, status int) {
+	errType := "server_error"
+	if status < 500 {
+		errType = "invalid_request_error"
+	}
+	res := openai.ErrorResponse{
+		Error: openai.ErrorDetail{
+			Message: fmt.Sprintf("mock injected error with status %d", status),
+			Type:    errType,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(res); err != nil {
+		log.Println("encode error:", err)
+	}
+}
+
 // writeChunk sends one chunk as an SSE event. It returns the first error, so
 // the caller can stop the stream when the client disconnects.
 func writeChunk(w http.ResponseWriter, rc *http.ResponseController, chunk openai.Chunk) error {
@@ -189,17 +225,22 @@ func main() {
 	tokens := flag.Int("tokens", 4, "number of content chunks in a response")
 	tokenDelay := flag.Duration("token-delay", 200*time.Millisecond, "delay after each content chunk in a stream")
 	latency := flag.Duration("latency", 0, "delay before the first byte of a response")
+	errorRate := flag.Float64("error-rate", 0, "fraction of requests that fail, from 0 to 1")
+	errorStatus := flag.Int("error-status", http.StatusInternalServerError, "HTTP status of a failed request, from 400 to 599")
 	flag.Parse()
 
 	cfg := &mockConfig{
-		tokens:     *tokens,
-		tokenDelay: *tokenDelay,
-		latency:    *latency,
+		tokens:      *tokens,
+		tokenDelay:  *tokenDelay,
+		latency:     *latency,
+		errorRate:   *errorRate,
+		errorStatus: *errorStatus,
 	}
 	if err := cfg.validate(); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("mock started: addr=%s tokens=%d token-delay=%v latency=%v", *addr, cfg.tokens, cfg.tokenDelay, cfg.latency)
+	log.Printf("mock started: addr=%s tokens=%d token-delay=%v latency=%v error-rate=%v error-status=%d",
+		*addr, cfg.tokens, cfg.tokenDelay, cfg.latency, cfg.errorRate, cfg.errorStatus)
 
 	mux := http.NewServeMux()
 

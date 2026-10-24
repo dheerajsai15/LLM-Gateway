@@ -45,3 +45,15 @@ type Chunk struct {
 	Model   string        `json:"model"`
 	Choices []ChunkChoice `json:"choices"`
 }
+
+// ErrorResponse is the body that OpenAI sends with an error status.
+type ErrorResponse struct {
+	Error ErrorDetail `json:"error"`
+}
+
+type ErrorDetail struct {
+	Message string  `json:"message"`
+	Type    string  `json:"type"`
+	Param   *string `json:"param"`
+	Code    *string `json:"code"`
+}
