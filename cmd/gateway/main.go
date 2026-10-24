@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -32,6 +33,7 @@ const (
 	readTimeout       = 30 * time.Second
 	serverIdleTimeout = 120 * time.Second
 	shutdownTimeout   = 25 * time.Second
+	pprofAddr         = "localhost:6060"
 )
 
 func healthHandler(w http.ResponseWriter, req *http.Request) {
@@ -179,6 +181,12 @@ func main() {
 	go func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
+		}
+	}()
+
+	go func() {
+		if pprofErr := http.ListenAndServe(pprofAddr, nil); pprofErr != nil {
+			slog.Error("pprof server failed", "err", pprofErr)
 		}
 	}()
 

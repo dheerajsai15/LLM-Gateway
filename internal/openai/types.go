@@ -5,10 +5,12 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+// Request holds only the fields the gateway reads. The gateway forwards the
+// original body unchanged, so other fields (messages, tools, ...) can have
+// any shape that the upstream accepts.
 type Request struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream"`
+	Model string `json:"model"`
+	Stream bool `json:"stream"`
 }
 
 type Choice struct {
