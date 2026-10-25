@@ -44,6 +44,25 @@ type Chunk struct {
 	Created int64         `json:"created"`
 	Model   string        `json:"model"`
 	Choices []ChunkChoice `json:"choices"`
+	Usage   *Usage        `json:"usage,omitempty"`
+}
+
+// Usage holds the token counts of one completion. In a stream, only the last
+// chunk has it, and only when the client sent stream_options.include_usage.
+type Usage struct {
+	PromptTokens            int                     `json:"prompt_tokens"`
+	CompletionTokens        int                     `json:"completion_tokens"`
+	TotalTokens             int                     `json:"total_tokens"`
+	PromptTokensDetails     PromptTokensDetails     `json:"prompt_tokens_details"`
+	CompletionTokensDetails CompletionTokensDetails `json:"completion_tokens_details"`
+}
+
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // ErrorResponse is the body that OpenAI sends with an error status.
