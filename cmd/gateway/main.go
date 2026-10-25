@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,14 +17,15 @@ import (
 
 	"github.com/dheerajsai15/LLM-Gateway/internal/config"
 	"github.com/dheerajsai15/LLM-Gateway/internal/openai"
+	"github.com/dheerajsai15/LLM-Gateway/internal/provider"
+	openaiprovider "github.com/dheerajsai15/LLM-Gateway/internal/provider/openai"
 )
 
 var errIdleTimeout = errors.New("upstream idle timeout")
 
 type gateway struct {
-	upstreamURL string
-	apiKey      string
 	idleTimeout time.Duration
+	provider    provider.Provider
 }
 
 const (
@@ -57,21 +57,14 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	upstreamPath := g.upstreamURL + req.RequestURI
-	upStreamReq, err := http.NewRequestWithContext(ctx, req.Method, upstreamPath, bytes.NewReader(reqBody))
-	if err != nil {
-		http.Error(w, "server error", http.StatusInternalServerError)
-		slog.Error("request creation failed", "err", err)
-		return
-	}
-
-	copyHeader(upStreamReq.Header, req.Header)
-	upStreamReq.Header.Set("Authorization", "Bearer "+g.apiKey)
-
 	idle := time.AfterFunc(g.idleTimeout, func() { cancel(errIdleTimeout) })
 	defer idle.Stop()
 
-	res, err := http.DefaultClient.Do(upStreamReq)
+	res, err := g.provider.ChatCompletion(ctx, provider.Request{
+		Model:   reqObj.Model,
+		Stream:  reqObj.Stream,
+		RawBody: reqBody,
+	})
 	if err != nil {
 		if errors.Is(context.Cause(ctx), errIdleTimeout) {
 			slog.Warn("upstream idle timeout", "stage", "before_upstream_response")
@@ -157,7 +150,10 @@ func main() {
 		slog.Error("load config failed", "err", err)
 		os.Exit(1)
 	}
-	gw := &gateway{upstreamURL: cfg.UpstreamURL, apiKey: cfg.APIKey, idleTimeout: cfg.IdleTimeout}
+	gw := &gateway{
+		idleTimeout: cfg.IdleTimeout,
+		provider:    openaiprovider.New(cfg.UpstreamURL, cfg.APIKey, http.DefaultClient),
+	}
 
 	mux := http.NewServeMux()
 
