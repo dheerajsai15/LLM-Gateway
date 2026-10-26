@@ -35,7 +35,8 @@ func (p *Provider) newRequest(ctx context.Context, body []byte) (*http.Request, 
 }
 
 // ChatCompletion sends req to the OpenAI API and returns the upstream response
-// unchanged: same status, headers and body. The caller must close the body.
+// unchanged: same status, headers and body. The body calls req.OnUpstreamRead
+// on each read with bytes. The caller must close the body.
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.Request) (*provider.Response, error) {
 	upReq, err := p.newRequest(ctx, req.RawBody)
 	if err != nil {
@@ -47,5 +48,9 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.Request) (*p
 		return nil, fmt.Errorf("upstream request: %w", err)
 	}
 
-	return &provider.Response{StatusCode: res.StatusCode, Header: res.Header, Body: res.Body}, nil
+	return &provider.Response{
+		StatusCode: res.StatusCode,
+		Header:     res.Header,
+		Body:       provider.WithReadActivity(res.Body, req.OnUpstreamRead),
+	}, nil
 }

@@ -60,10 +60,13 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 	idle := time.AfterFunc(g.idleTimeout, func() { cancel(errIdleTimeout) })
 	defer idle.Stop()
 
+	// The adapter resets the idle timer on each read from the upstream. The
+	// handler does not, because some adapters read in their own goroutine.
 	res, err := g.provider.ChatCompletion(ctx, provider.Request{
-		Model:   reqObj.Model,
-		Stream:  reqObj.Stream,
-		RawBody: reqBody,
+		Model:          reqObj.Model,
+		Stream:         reqObj.Stream,
+		RawBody:        reqBody,
+		OnUpstreamRead: func() { idle.Reset(g.idleTimeout) },
 	})
 	if err != nil {
 		if errors.Is(context.Cause(ctx), errIdleTimeout) {
@@ -91,7 +94,6 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 		n, err := res.Body.Read(buf)
 
 		if n > 0 {
-			idle.Reset(g.idleTimeout)
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				if req.Context().Err() != nil {
 					slog.Info("client disconnected", "stage", "during_stream", "err", werr)
