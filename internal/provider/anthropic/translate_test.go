@@ -23,10 +23,11 @@ func textBlocks(texts ...string) []anthropicBlock {
 
 func TestTranslateRequest(t *testing.T) {
 	tests := []struct {
-		name    string
-		body    string
-		want    anthropicRequest
-		wantErr string
+		name      string
+		body      string
+		want      anthropicRequest
+		wantUsage bool
+		wantErr   string
 	}{
 		{
 			name: "default max tokens",
@@ -102,6 +103,22 @@ func TestTranslateRequest(t *testing.T) {
 			want: anthropicRequest{Model: testModel, MaxTokens: 1024, Messages: []anthropicMessage{userHi}, Stream: true},
 		},
 		{
+			name:      "include_usage true",
+			body:      `{"model":"claude-opus-5-5","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`,
+			want:      anthropicRequest{Model: testModel, MaxTokens: 1024, Messages: []anthropicMessage{userHi}, Stream: true},
+			wantUsage: true,
+		},
+		{
+			name: "include_usage false",
+			body: `{"model":"claude-opus-5-5","stream":true,"stream_options":{"include_usage":false},"messages":[{"role":"user","content":"hi"}]}`,
+			want: anthropicRequest{Model: testModel, MaxTokens: 1024, Messages: []anthropicMessage{userHi}, Stream: true},
+		},
+		{
+			name: "stream_options null",
+			body: `{"model":"claude-opus-5-5","stream":true,"stream_options":null,"messages":[{"role":"user","content":"hi"}]}`,
+			want: anthropicRequest{Model: testModel, MaxTokens: 1024, Messages: []anthropicMessage{userHi}, Stream: true},
+		},
+		{
 			name: "array content",
 			body: `{"model":"claude-opus-5-5","messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"text","text":"there"}]}]}`,
 			want: anthropicRequest{
@@ -136,6 +153,11 @@ func TestTranslateRequest(t *testing.T) {
 			wantErr: "parse stop",
 		},
 		{
+			name:    "bad include_usage type",
+			body:    `{"model":"claude-opus-5-5","stream":true,"stream_options":{"include_usage":"yes"},"messages":[{"role":"user","content":"hi"}]}`,
+			wantErr: "parse request",
+		},
+		{
 			name:    "invalid JSON",
 			body:    `{"model":`,
 			wantErr: "parse request",
@@ -144,7 +166,7 @@ func TestTranslateRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := translateRequest([]byte(tt.body), 1024)
+			got, gotUsage, err := translateRequest([]byte(tt.body), 1024)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
@@ -157,6 +179,9 @@ func TestTranslateRequest(t *testing.T) {
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got  %+v\nwant %+v", got, tt.want)
 			}
+			if gotUsage != tt.wantUsage {
+				t.Errorf("includeUsage = %v, want %v", gotUsage, tt.wantUsage)
+			}
 		})
 	}
 }
@@ -165,7 +190,7 @@ func TestTranslateRequest(t *testing.T) {
 // reflect.DeepEqual in TestTranslateRequest does not see.
 func TestTranslateRequestJSON(t *testing.T) {
 	body := `{"model":"claude-opus-5-5","stop":"END","messages":[{"role":"user","content":"hi"}]}`
-	req, err := translateRequest([]byte(body), 1024)
+	req, _, err := translateRequest([]byte(body), 1024)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

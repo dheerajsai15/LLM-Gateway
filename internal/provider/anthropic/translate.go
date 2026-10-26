@@ -16,6 +16,9 @@ type openaiRequest struct {
 	MaxCompletionTokens *int            `json:"max_completion_tokens"`
 	Stop                json.RawMessage `json:"stop"`
 	Stream              bool            `json:"stream"`
+	StreamOptions       struct {
+		IncludeUsage bool `json:"include_usage"`
+	} `json:"stream_options"`
 }
 
 // openaiMessage is one message in an OpenAI chat request. Content is a string
@@ -50,10 +53,12 @@ type anthropicBlock struct {
 
 // translateRequest converts an OpenAI chat request body into an Anthropic
 // request. It uses defaultMaxTokens when the client sets no token limit.
-func translateRequest(body []byte, defaultMaxTokens int) (anthropicRequest, error) {
+// The bool is the client's stream_options.include_usage. Anthropic has no
+// such option, so the adapter gives it to translateStream instead.
+func translateRequest(body []byte, defaultMaxTokens int) (anthropicRequest, bool, error) {
 	var in openaiRequest
 	if err := json.Unmarshal(body, &in); err != nil {
-		return anthropicRequest{}, fmt.Errorf("parse request: %w", err)
+		return anthropicRequest{}, false, fmt.Errorf("parse request: %w", err)
 	}
 
 	out := anthropicRequest{Model: in.Model, Stream: in.Stream}
@@ -69,7 +74,7 @@ func translateRequest(body []byte, defaultMaxTokens int) (anthropicRequest, erro
 
 	stop, err := parseStop(in.Stop)
 	if err != nil {
-		return anthropicRequest{}, err
+		return anthropicRequest{}, false, err
 	}
 	out.StopSequences = stop
 
@@ -77,7 +82,7 @@ func translateRequest(body []byte, defaultMaxTokens int) (anthropicRequest, erro
 	for _, msg := range in.Messages {
 		blocks, err := contentBlocks(msg.Content)
 		if err != nil {
-			return anthropicRequest{}, err
+			return anthropicRequest{}, false, err
 		}
 		switch msg.Role {
 		case "system", "developer":
@@ -87,12 +92,12 @@ func translateRequest(body []byte, defaultMaxTokens int) (anthropicRequest, erro
 		case "user", "assistant":
 			out.Messages = append(out.Messages, anthropicMessage{Role: msg.Role, Content: blocks})
 		default:
-			return anthropicRequest{}, fmt.Errorf("unsupported role %q", msg.Role)
+			return anthropicRequest{}, false, fmt.Errorf("unsupported role %q", msg.Role)
 		}
 	}
 	out.System = strings.Join(system, "\n\n")
 
-	return out, nil
+	return out, in.StreamOptions.IncludeUsage, nil
 }
 
 // parseStop converts the OpenAI stop field, a string or an array of strings,
