@@ -18,6 +18,7 @@ import (
 	"github.com/dheerajsai15/LLM-Gateway/internal/config"
 	"github.com/dheerajsai15/LLM-Gateway/internal/openai"
 	"github.com/dheerajsai15/LLM-Gateway/internal/provider"
+	"github.com/dheerajsai15/LLM-Gateway/internal/provider/anthropic"
 	openaiprovider "github.com/dheerajsai15/LLM-Gateway/internal/provider/openai"
 )
 
@@ -152,9 +153,13 @@ func main() {
 		slog.Error("load config failed", "err", err)
 		os.Exit(1)
 	}
+	openaiProvider := openaiprovider.New(cfg.UpstreamURL, cfg.APIKey, http.DefaultClient)
+	anthropicProvider := anthropic.New(cfg.AnthropicURL, cfg.AnthropicAPIKey, http.DefaultClient)
 	gw := &gateway{
 		idleTimeout: cfg.IdleTimeout,
-		provider:    openaiprovider.New(cfg.UpstreamURL, cfg.APIKey, http.DefaultClient),
+		provider: provider.NewRouter(openaiProvider,
+			provider.Route{Prefix: "claude-", Provider: anthropicProvider},
+		),
 	}
 
 	mux := http.NewServeMux()
@@ -175,7 +180,7 @@ func main() {
 	defer stop()
 	errCh := make(chan error, 1)
 
-	slog.Info("gateway started", "listen_addr", cfg.ListenAddr, "upstream", cfg.UpstreamURL, "idle_timeout", cfg.IdleTimeout)
+	slog.Info("gateway started", "listen_addr", cfg.ListenAddr, "upstream", cfg.UpstreamURL, "anthropic_url", cfg.AnthropicURL, "idle_timeout", cfg.IdleTimeout)
 	go func() {
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
