@@ -220,6 +220,111 @@ func writeEvent(w http.ResponseWriter, rc *http.ResponseController, data []byte)
 	return nil
 }
 
+// messagesHandler answers POST /v1/messages like the Anthropic API. It sends
+// one text block with the mock tokens and waits tokenDelay after each one.
+// Only streamed requests are supported, because the gateway sends only those.
+func (cfg *mockConfig) messagesHandler(w http.ResponseWriter, req *http.Request) {
+	var msgReq struct {
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&msgReq); err != nil {
+		http.Error(w, "JSON supplied is not correct format!", http.StatusBadRequest)
+		return
+	}
+	log.Printf("anthropic %+v", msgReq)
+
+	if !msgReq.Stream {
+		http.Error(w, "the mock supports only streamed messages", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	rc := http.NewResponseController(w)
+	ctx := req.Context()
+	tokens := cfg.responseTokens()
+
+	err := writeAnthropicEvent(w, rc, "message_start", map[string]any{
+		"message": map[string]any{
+			"id":      "msg_mock_1",
+			"type":    "message",
+			"role":    "assistant",
+			"model":   msgReq.Model,
+			"content": []any{},
+			"usage":   map[string]any{"input_tokens": 10, "output_tokens": 1},
+		},
+	})
+	if err != nil {
+		return
+	}
+
+	err = writeAnthropicEvent(w, rc, "content_block_start", map[string]any{
+		"index":         0,
+		"content_block": map[string]any{"type": "text", "text": ""},
+	})
+	if err != nil {
+		return
+	}
+
+	for _, token := range tokens {
+		err := writeAnthropicEvent(w, rc, "content_block_delta", map[string]any{
+			"index": 0,
+			"delta": map[string]any{"type": "text_delta", "text": token},
+		})
+		if err != nil {
+			return
+		}
+
+		if err := sleepCtx(ctx, cfg.tokenDelay); err != nil {
+			log.Println("anthropic stream wait stopped:", err)
+			return
+		}
+	}
+
+	if err := writeAnthropicEvent(w, rc, "content_block_stop", map[string]any{"index": 0}); err != nil {
+		return
+	}
+
+	err = writeAnthropicEvent(w, rc, "message_delta", map[string]any{
+		"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+		"usage": map[string]any{"output_tokens": len(tokens)},
+	})
+	if err != nil {
+		return
+	}
+
+	writeAnthropicEvent(w, rc, "message_stop", nil)
+}
+
+// writeAnthropicEvent sends one event in the Anthropic SSE format: an
+// "event:" line with the type, then a "data:" line with the JSON. It sets the
+// "type" field of the data to eventType, so the two always match. data can be
+// nil for an event that has no other fields.
+func writeAnthropicEvent(w http.ResponseWriter, rc *http.ResponseController, eventType string, data map[string]any) error {
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["type"] = eventType
+	b, err := json.Marshal(data)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, b); err != nil {
+		log.Println(err)
+		return err
+	}
+
+	if err := rc.Flush(); err != nil {
+		log.Println(err)
+		return err
+	}
+
+	return nil
+}
+
 func main() {
 	addr := flag.String("addr", ":9090", "address to listen on")
 	tokens := flag.Int("tokens", 4, "number of content chunks in a response")
@@ -245,6 +350,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /v1/chat/completions", cfg.chatCompletionHandler)
+	mux.HandleFunc("POST /v1/messages", cfg.messagesHandler)
 
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		log.Fatal(err)
