@@ -17,7 +17,9 @@ import (
 	"github.com/dheerajsai15/LLM-Gateway/internal/provider"
 )
 
-const helloBody = `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`
+// helloBody is streamed, because the adapter rejects other requests before
+// the send.
+const helloBody = `{"model":"claude-opus-5-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 
 // upstreamRequest is what the fake Anthropic server got.
 type upstreamRequest struct {
@@ -69,7 +71,7 @@ func TestChatCompletionSendsRequest(t *testing.T) {
 			t.Errorf("header %s = %q, want %q", name, v, want)
 		}
 	}
-	want := `{"model":"claude-opus-5-5","max_tokens":4096,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	want := `{"model":"claude-opus-5-5","max_tokens":4096,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stream":true}`
 	if string(up.body) != want {
 		t.Errorf("body:\ngot  %s\nwant %s", up.body, want)
 	}
@@ -191,12 +193,18 @@ func TestChatCompletionUpstreamDown(t *testing.T) {
 }
 
 func TestChatCompletionNotStreamed(t *testing.T) {
-	srv, _ := fakeUpstream(t, http.StatusOK, nil, "{}")
+	srv, got := fakeUpstream(t, http.StatusOK, nil, "{}")
 	p := New(srv.URL, "test-key", srv.Client())
+	body := `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`
 
-	_, err := p.ChatCompletion(context.Background(), provider.Request{RawBody: []byte(helloBody)})
+	_, err := p.ChatCompletion(context.Background(), provider.Request{RawBody: []byte(body)})
 	if err == nil || !strings.Contains(err.Error(), "not streamed") {
 		t.Errorf("err = %v, want a not-streamed error", err)
+	}
+	select {
+	case <-got:
+		t.Error("a request that is not streamed must not go to Anthropic")
+	default:
 	}
 }
 

@@ -69,6 +69,13 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.Request) (*p
 		return badRequest(err.Error())
 	}
 
+	if !anthReq.Stream {
+		// The translation of responses that are not streamed is not written
+		// yet. The check comes before the send, so Anthropic does not
+		// generate an answer that the gateway then drops.
+		return nil, errors.New("anthropic: responses that are not streamed are not supported yet")
+	}
+
 	body, err := json.Marshal(anthReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal anthropic request: %w", err)
@@ -102,13 +109,6 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.Request) (*p
 			Header:     header,
 			Body:       cancelOnClose{provider.WithReadActivity(res.Body, req.OnUpstreamRead), upCancel},
 		}, nil
-	}
-
-	if !anthReq.Stream {
-		// The translation of responses that are not streamed is not written yet.
-		res.Body.Close()
-		upCancel()
-		return nil, errors.New("anthropic: responses that are not streamed are not supported yet")
 	}
 
 	// The goroutine translates the Anthropic events and writes the OpenAI
