@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,20 +59,14 @@ func (p *Provider) newRequest(ctx context.Context, body []byte) (*http.Request, 
 // request that cannot be translated gets a 400 in OpenAI format, and nothing
 // goes to Anthropic. An error status from Anthropic passes through with its
 // body unchanged. A stream is translated to OpenAI chunks while the caller
-// reads the body. The caller must close the body. Closing the body also
+// reads the body. A message that is not streamed is translated before the
+// return. The caller must close the body. Closing the body also
 // cancels the upstream request, so the caller does not need to cancel ctx.
 func (p *Provider) ChatCompletion(ctx context.Context, req provider.Request) (*provider.Response, error) {
 	anthReq, includeUsage, err := translateRequest(req.RawBody, defaultMaxTokens)
 	if err != nil {
 		// The error describes the client's own request, so it is safe to show.
 		return badRequest(err.Error())
-	}
-
-	if !anthReq.Stream {
-		// The translation of responses that are not streamed is not written
-		// yet. The check comes before the send, so Anthropic does not
-		// generate an answer that the gateway then drops.
-		return nil, errors.New("anthropic: responses that are not streamed are not supported yet")
 	}
 
 	body, err := json.Marshal(anthReq)
@@ -111,6 +104,14 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.Request) (*p
 		}, nil
 	}
 
+	if !anthReq.Stream {
+		// The whole message is read before the return, so the upstream
+		// request ends here. A defer is safe on this path, because nothing
+		// reads from the upstream later.
+		defer upCancel()
+		return p.translateMessage(res, req.OnUpstreamRead)
+	}
+
 	// The goroutine translates the Anthropic events and writes the OpenAI
 	// chunks into the pipe. The caller reads them from the other end. Each
 	// pipe Write waits until the caller reads, so no chunks pile up in memory.
@@ -139,6 +140,32 @@ func (p *Provider) ChatCompletion(ctx context.Context, req provider.Request) (*p
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": {"text/event-stream"}},
 		Body:       cancelOnClose{pr, upCancel},
+	}, nil
+}
+
+// translateMessage reads a whole Anthropic message from res and returns it as
+// an OpenAI chat completion. The returned body is in memory, so it does not
+// hold the upstream connection.
+func (p *Provider) translateMessage(res *http.Response, onRead func()) (*provider.Response, error) {
+	defer res.Body.Close()
+	msg, err := io.ReadAll(provider.WithReadActivity(res.Body, onRead))
+	if err != nil {
+		return nil, fmt.Errorf("read anthropic message: %w", err)
+	}
+
+	completion, err := translateResponse(msg, p.now().Unix())
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := json.Marshal(completion)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat completion: %w", err)
+	}
+	return &provider.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(body)),
 	}, nil
 }
 

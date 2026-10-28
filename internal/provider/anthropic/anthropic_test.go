@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -192,19 +193,71 @@ func TestChatCompletionUpstreamDown(t *testing.T) {
 	}
 }
 
-func TestChatCompletionNotStreamed(t *testing.T) {
-	srv, got := fakeUpstream(t, http.StatusOK, nil, "{}")
+func TestChatCompletionMessage(t *testing.T) {
+	recording, err := os.ReadFile("testdata/message_text.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden, err := os.ReadFile("testdata/message_text.golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The golden file is indented. The adapter sends compact JSON.
+	var want bytes.Buffer
+	if err := json.Compact(&want, golden); err != nil {
+		t.Fatal(err)
+	}
+
+	upstreamHeader := http.Header{"Content-Type": {"application/json"}, "Request-Id": {"req_1"}}
+	srv, got := fakeUpstream(t, http.StatusOK, upstreamHeader, string(recording))
+	p := New(srv.URL, "test-key", srv.Client())
+	p.now = func() time.Time { return time.Unix(testCreated, 0) }
+	body := `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`
+	reads := 0
+
+	res, err := p.ChatCompletion(context.Background(), provider.Request{
+		RawBody:        []byte(body),
+		OnUpstreamRead: func() { reads++ },
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	defer res.Body.Close()
+
+	if up := <-got; strings.Contains(string(up.body), `"stream"`) {
+		t.Errorf("upstream body = %s, want no stream field", up.body)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", res.StatusCode)
+	}
+	wantHeader := http.Header{"Content-Type": {"application/json"}}
+	if !reflect.DeepEqual(res.Header, wantHeader) {
+		t.Errorf("header = %v, want %v", res.Header, wantHeader)
+	}
+	out, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !bytes.Equal(out, want.Bytes()) {
+		t.Errorf("body:\ngot  %s\nwant %s", out, want.Bytes())
+	}
+	if reads == 0 {
+		t.Error("OnUpstreamRead was not called")
+	}
+}
+
+func TestChatCompletionBadMessage(t *testing.T) {
+	srv, _ := fakeUpstream(t, http.StatusOK, nil, "not json")
 	p := New(srv.URL, "test-key", srv.Client())
 	body := `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`
 
-	_, err := p.ChatCompletion(context.Background(), provider.Request{RawBody: []byte(body)})
-	if err == nil || !strings.Contains(err.Error(), "not streamed") {
-		t.Errorf("err = %v, want a not-streamed error", err)
+	res, err := p.ChatCompletion(context.Background(), provider.Request{RawBody: []byte(body)})
+	if err == nil {
+		res.Body.Close()
+		t.Fatal("ChatCompletion() error = nil, want an error")
 	}
-	select {
-	case <-got:
-		t.Error("a request that is not streamed must not go to Anthropic")
-	default:
+	if !strings.Contains(err.Error(), "parse anthropic message") {
+		t.Errorf("err = %v, want a parse error", err)
 	}
 }
 

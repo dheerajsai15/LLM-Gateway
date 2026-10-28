@@ -1,0 +1,27 @@
+{
+  "id": "msg_011CgMMGVo2GswPhg8wzLE9D",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "claude-opus-5-5",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "`fmt.Println(\"Hello, Gopher!\")`, and may your errors always be handled with `if err != nil`!"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 30,
+    "completion_tokens": 63,
+    "total_tokens": 93,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 23
+    }
+  }
+}
