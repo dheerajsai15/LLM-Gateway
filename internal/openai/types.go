@@ -66,6 +66,19 @@ type CompletionTokensDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
+// ModelList is the body of GET /v1/models.
+type ModelList struct {
+	Object string  `json:"object"`
+	Data   []Model `json:"data"`
+}
+
+type Model struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
 // ErrorResponse is the body that OpenAI sends with an error status.
 type ErrorResponse struct {
 	Error ErrorDetail `json:"error"`

@@ -27,6 +27,7 @@ var errIdleTimeout = errors.New("upstream idle timeout")
 type gateway struct {
 	idleTimeout time.Duration
 	provider    provider.Provider
+	models      openai.ModelList
 }
 
 const (
@@ -40,6 +41,21 @@ const (
 func healthHandler(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "ok")
+}
+
+func newModelList(ids []string) openai.ModelList {
+	list := openai.ModelList{Object: "list", Data: make([]openai.Model, 0, len(ids))}
+	for _, id := range ids {
+		list.Data = append(list.Data, openai.Model{ID: id, Object: "model", OwnedBy: "llm-gateway"})
+	}
+	return list
+}
+
+func (g *gateway) modelsHandler(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(g.models); err != nil {
+		slog.Error("writing model list failed", "err", err)
+	}
 }
 
 func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
@@ -160,11 +176,14 @@ func main() {
 		provider: provider.NewRouter(openaiProvider,
 			provider.Route{Prefix: "claude-", Provider: anthropicProvider},
 		),
+		models: newModelList(cfg.Models),
 	}
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
+
+	mux.HandleFunc("GET /v1/models", gw.modelsHandler)
 
 	mux.HandleFunc("POST /v1/chat/completions", gw.chatCompletionHandler)
 

@@ -18,6 +18,7 @@ type Config struct {
 	UpstreamURL string        `yaml:"upstream_url"`
 	APIKey      string        `yaml:"-"`
 	IdleTimeout time.Duration `yaml:"idle_timeout"`
+	Models      []string      `yaml:"models"`
 
 	AnthropicAPIKey string `yaml:"-"`
 	AnthropicURL    string `yaml:"anthropic_url"`
