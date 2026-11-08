@@ -67,6 +67,7 @@ func TestLoadAnthropic(t *testing.T) {
 			// developer cannot change the result.
 			t.Setenv("OPENAI_API_KEY", "test-openai-key")
 			t.Setenv("ANTHROPIC_API_KEY", tt.key)
+			t.Setenv("DATABASE_URL", "postgres://test")
 			t.Setenv("GATEWAY_LISTEN_ADDR", "")
 			t.Setenv("GATEWAY_UPSTREAM_URL", "")
 			t.Setenv("GATEWAY_IDLE_TIMEOUT", "")

@@ -17,6 +17,7 @@ type Config struct {
 	ListenAddr  string        `yaml:"listen_addr"`
 	UpstreamURL string        `yaml:"upstream_url"`
 	APIKey      string        `yaml:"-"`
+	DatabaseURL string        `yaml:"-"`
 	IdleTimeout time.Duration `yaml:"idle_timeout"`
 	Models      []string      `yaml:"models"`
 
@@ -46,6 +47,7 @@ func Load(path string) (Config, error) {
 
 	cfg.APIKey = os.Getenv("OPENAI_API_KEY")
 	cfg.AnthropicAPIKey = os.Getenv("ANTHROPIC_API_KEY")
+	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
 
 	envIdleTime := os.Getenv("GATEWAY_IDLE_TIMEOUT")
 
@@ -74,6 +76,10 @@ func (cfg *Config) validate() error {
 
 	if cfg.AnthropicAPIKey == "" {
 		return errors.New("ANTHROPIC_API_KEY is not set")
+	}
+
+	if cfg.DatabaseURL == "" {
+		return errors.New("DATABASE_URL is not set")
 	}
 
 	if err := validateURL("upstream_url", cfg.UpstreamURL); err != nil {

@@ -15,7 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dheerajsai15/LLM-Gateway/internal/apikey"
 	"github.com/dheerajsai15/LLM-Gateway/internal/config"
+	"github.com/dheerajsai15/LLM-Gateway/internal/db"
 	"github.com/dheerajsai15/LLM-Gateway/internal/openai"
 	"github.com/dheerajsai15/LLM-Gateway/internal/provider"
 	"github.com/dheerajsai15/LLM-Gateway/internal/provider/anthropic"
@@ -31,11 +33,13 @@ type gateway struct {
 }
 
 const (
-	readHeaderTimeout = 10 * time.Second
-	readTimeout       = 30 * time.Second
-	serverIdleTimeout = 120 * time.Second
-	shutdownTimeout   = 25 * time.Second
-	pprofAddr         = "localhost:6060"
+	readHeaderTimeout  = 10 * time.Second
+	readTimeout        = 30 * time.Second
+	serverIdleTimeout  = 120 * time.Second
+	shutdownTimeout    = 25 * time.Second
+	pprofAddr          = "localhost:6060"
+	keyRefreshInterval = 30 * time.Second
+	startupTimeout     = 10 * time.Second
 )
 
 func healthHandler(w http.ResponseWriter, req *http.Request) {
@@ -179,13 +183,31 @@ func main() {
 		models: newModelList(cfg.Models),
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	startupCtx, cancel := context.WithTimeout(ctx, startupTimeout)
+	pool, err := db.Connect(startupCtx, cfg.DatabaseURL)
+	if err != nil {
+		slog.Error("cannot connect to db", "err", err)
+		os.Exit(1)
+	}
+	cache := apikey.NewCache(apikey.NewStore(pool))
+	err = cache.Refresh(startupCtx)
+	if err != nil {
+		slog.Error("cannot load keys from db", "err", err)
+		os.Exit(1)
+	}
+	cancel()
+	go cache.RefreshEvery(ctx, keyRefreshInterval)
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
 
-	mux.HandleFunc("GET /v1/models", gw.modelsHandler)
+	mux.Handle("GET /v1/models", requireAPIKey(cache, http.HandlerFunc(gw.modelsHandler)))
 
-	mux.HandleFunc("POST /v1/chat/completions", gw.chatCompletionHandler)
+	mux.Handle("POST /v1/chat/completions", requireAPIKey(cache, http.HandlerFunc(gw.chatCompletionHandler)))
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -195,8 +217,6 @@ func main() {
 		ReadTimeout:       readTimeout,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	errCh := make(chan error, 1)
 
 	slog.Info("gateway started", "listen_addr", cfg.ListenAddr, "upstream", cfg.UpstreamURL, "anthropic_url", cfg.AnthropicURL, "idle_timeout", cfg.IdleTimeout)
@@ -227,6 +247,6 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown failed", "err", err)
 	}
-
+	pool.Close()
 	slog.Info("server stopped")
 }
