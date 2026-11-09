@@ -26,9 +26,14 @@ import (
 
 var errIdleTimeout = errors.New("upstream idle timeout")
 
+type routingProvider interface {
+	provider.Provider
+	ProviderName(model string) string
+}
+
 type gateway struct {
 	idleTimeout time.Duration
-	provider    provider.Provider
+	provider    routingProvider
 	models      openai.ModelList
 }
 

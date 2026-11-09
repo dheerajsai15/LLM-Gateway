@@ -31,6 +31,16 @@ func (r *Router) ChatCompletion(ctx context.Context, req Request) (*Response, er
 	return r.pick(req.Model).ChatCompletion(ctx, req)
 }
 
+// ProviderName returns the name of the provider that serves model, or "" if
+// that provider has no Name method.
+func (r *Router) ProviderName(model string) string {
+	p := r.pick(model)
+	if n, ok := p.(interface{ Name() string }); ok {
+		return n.Name()
+	}
+	return ""
+}
+
 func (r *Router) pick(model string) Provider {
 	for _, route := range r.routes {
 		if strings.HasPrefix(model, route.Prefix) {
