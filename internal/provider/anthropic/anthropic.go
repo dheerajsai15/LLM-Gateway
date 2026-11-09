@@ -44,6 +44,8 @@ func New(baseURL string, apiKey string, client *http.Client) *Provider {
 	return &Provider{baseURL: baseURL, apiKey: apiKey, client: client, now: time.Now}
 }
 
+func (p *Provider) Name() string { return "anthropic" }
+
 func (p *Provider) newRequest(ctx context.Context, body []byte) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {

@@ -24,6 +24,8 @@ func New(baseURL string, apiKey string, client *http.Client) *Provider {
 	return &Provider{baseURL: baseURL, apiKey: apiKey, client: client}
 }
 
+func (p *Provider) Name() string { return "openai" }
+
 func (p *Provider) newRequest(ctx context.Context, body []byte) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
