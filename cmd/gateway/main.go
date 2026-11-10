@@ -22,6 +22,7 @@ import (
 	"github.com/dheerajsai15/LLM-Gateway/internal/provider"
 	"github.com/dheerajsai15/LLM-Gateway/internal/provider/anthropic"
 	openaiprovider "github.com/dheerajsai15/LLM-Gateway/internal/provider/openai"
+	"github.com/dheerajsai15/LLM-Gateway/internal/usage"
 )
 
 var errIdleTimeout = errors.New("upstream idle timeout")
@@ -68,20 +69,37 @@ func (g *gateway) modelsHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request) {
+	record := usage.Record{StartedAt: time.Now()}
+	keyID, ok := apiKeyIDFromContext(req.Context())
+	if !ok {
+		slog.Error("chat completion without an API key id")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	record.APIKeyID = keyID
+
+	sr := &statusRecorder{ResponseWriter: w}
+	w = sr
+
 	ctx, cancel := context.WithCancelCause(req.Context())
 	defer cancel(nil)
 
 	reqBody, err := io.ReadAll(req.Body)
 	if err != nil {
+		record.Outcome = usage.OutcomeBadRequest
 		http.Error(w, "cannot read request body", http.StatusBadRequest)
 		return
 	}
 
 	reqObj := openai.Request{}
 	if err := json.Unmarshal(reqBody, &reqObj); err != nil {
+		record.Outcome = usage.OutcomeBadRequest
 		http.Error(w, "bad JSON", http.StatusBadRequest)
 		return
 	}
+	record.Model = reqObj.Model
+	record.Stream = reqObj.Stream
+	record.Provider = g.provider.ProviderName(reqObj.Model)
 
 	idle := time.AfterFunc(g.idleTimeout, func() { cancel(errIdleTimeout) })
 	defer idle.Stop()
@@ -96,14 +114,17 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 	})
 	if err != nil {
 		if errors.Is(context.Cause(ctx), errIdleTimeout) {
+			record.Outcome = usage.OutcomeIdleTimeout
 			slog.Warn("upstream idle timeout", "stage", "before_upstream_response")
 			http.Error(w, "upstream idle timeout before response", http.StatusGatewayTimeout)
 			return
 		}
 		if errors.Is(err, context.Canceled) {
+			record.Outcome = usage.OutcomeClientCanceled
 			slog.Info("client disconnected", "stage", "before_upstream_response")
 			return
 		}
+		record.Outcome = usage.OutcomeUpstreamError
 		http.Error(w, "upstream service unavailable", http.StatusBadGateway)
 		slog.Error("upstream service unavailable", "err", err)
 		return
@@ -121,6 +142,7 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
+				record.Outcome = usage.OutcomeClientCanceled
 				if req.Context().Err() != nil {
 					slog.Info("client disconnected", "stage", "during_stream", "err", werr)
 					return
@@ -130,6 +152,7 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 			}
 
 			if ferr := rc.Flush(); ferr != nil {
+				record.Outcome = usage.OutcomeClientCanceled
 				if req.Context().Err() != nil {
 					slog.Info("client disconnected", "stage", "during_stream", "err", ferr)
 					return
@@ -140,23 +163,38 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 		}
 
 		if err == io.EOF {
+			record.Outcome = outcomeForStatus(res.StatusCode)
 			return
 		}
 
 		if err != nil {
 			if errors.Is(context.Cause(ctx), errIdleTimeout) {
+				record.Outcome = usage.OutcomeIdleTimeout
 				slog.Warn("upstream idle timeout", "stage", "during_stream")
 				return
 			}
 			if errors.Is(err, context.Canceled) {
+				record.Outcome = usage.OutcomeClientCanceled
 				slog.Info("client disconnected", "stage", "during_stream")
 				return
 			}
+			record.Outcome = usage.OutcomeUpstreamError
 			slog.Error("reading upstream response failed", "err", err, "stage", "during_stream")
 			return
 		}
 	}
 
+}
+
+func outcomeForStatus(code int) usage.Outcome {
+	switch {
+	case code == http.StatusBadRequest:
+		return usage.OutcomeBadRequest
+	case code >= 400:
+		return usage.OutcomeUpstreamError
+	default:
+		return usage.OutcomeOK
+	}
 }
 
 func copyHeader(dst, src http.Header) {
