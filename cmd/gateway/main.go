@@ -32,10 +32,15 @@ type routingProvider interface {
 	ProviderName(model string) string
 }
 
+type usageSender interface {
+	Send(r usage.Record)
+}
+
 type gateway struct {
 	idleTimeout time.Duration
 	provider    routingProvider
 	models      openai.ModelList
+	usageLog    usageSender
 }
 
 const (
@@ -46,6 +51,9 @@ const (
 	pprofAddr          = "localhost:6060"
 	keyRefreshInterval = 30 * time.Second
 	startupTimeout     = 10 * time.Second
+	usageBufferSize    = 1024
+	usageBatchSize     = 100
+	usageFlushInterval = time.Second
 )
 
 func healthHandler(w http.ResponseWriter, req *http.Request) {
@@ -80,6 +88,22 @@ func (g *gateway) chatCompletionHandler(w http.ResponseWriter, req *http.Request
 
 	sr := &statusRecorder{ResponseWriter: w}
 	w = sr
+
+	// A closure, because the arguments of a deferred call are evaluated at
+	// the defer line. It is registered first, so it runs last, after the
+	// upstream body is closed.
+	defer func() {
+		record.Duration = time.Since(record.StartedAt)
+		record.StatusCode = sr.status
+		if record.StatusCode == 0 {
+			record.StatusCode = statusClientClosedRequest
+		}
+		if record.Outcome == "" {
+			slog.Error("usage record without an outcome", "status", record.StatusCode)
+			record.Outcome = usage.OutcomeUpstreamError
+		}
+		g.usageLog.Send(record)
+	}()
 
 	ctx, cancel := context.WithCancelCause(req.Context())
 	defer cancel(nil)
@@ -244,6 +268,10 @@ func main() {
 	cancel()
 	go cache.RefreshEvery(ctx, keyRefreshInterval)
 
+	usageWriter := usage.NewWriter(usage.NewStore(pool), usageBufferSize, usageBatchSize, usageFlushInterval)
+	go usageWriter.Run()
+	gw.usageLog = usageWriter
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
@@ -289,6 +317,9 @@ func main() {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown failed", "err", err)
+	}
+	if err := usageWriter.Close(shutdownCtx); err != nil {
+		slog.Error("usage writer close failed", "err", err)
 	}
 	pool.Close()
 	slog.Info("server stopped")
