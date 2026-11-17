@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -100,5 +101,17 @@ func (w *Writer) Run() {
 				}
 			}
 		}
+	}
+}
+
+// Close stops Run and waits until it has written the last batch, or until
+// ctx ends. Call it once, after the server has stopped.
+func (w *Writer) Close(ctx context.Context) error {
+	close(w.stop)
+	select {
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("usage writer did not finish: %w", ctx.Err())
 	}
 }
